@@ -230,7 +230,7 @@
   </div>
 </main>
 
-<footer id="pie" style="display:none;">Datos leídos en vivo desde la Base. Los filtros de "Resumen empresa" no afectan a Gestión Vendedor ni a Alertas — esas dos siempre muestran el total real.</footer>
+<footer id="pie" style="display:none;">Datos leídos en vivo desde la Base. Los filtros de "Resumen empresa" afectan solo a esa pestaña; Gestión Vendedor tiene sus propios filtros para analizar sus clientes.</footer>
 
 <div id="imprimirInforme"></div>
 
@@ -264,7 +264,7 @@ function datalabelsBarraH(formatFn){
 let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [], EMPRESAS_SIN_CRUZAR = [], EMBUDO = null, PEDIDOS_FRANCO_SIN_OPORTUNIDAD = [];
 let chartClientes=null, chartModalidad=null, chartCategoria=null, chartTendencia=null,
     chartPrecio=null, chartDiaCliente=null, chartCatClienteMonto=null, chartCatClientePedidos=null,
-    chartEvolucionCliente=null;
+    chartEvolucionCliente=null, chartGestionClientesFacturacion=null, chartGestionClientesM3=null;
 
 function moneda(n){ if(n===null||n===undefined||isNaN(n)) return "—"; return "$"+Math.round(n).toLocaleString("es-AR"); }
 function fechaHora(iso){
@@ -280,10 +280,29 @@ function fechaCorta(iso){
   if(isNaN(d)) return "—";
   return d.toLocaleDateString("es-AR",{day:"2-digit",month:"2-digit",year:"numeric"});
 }
+// Canonicaliza unidades antes de agrupar: m3 / M3 / m³ se suman juntos,
+// pero nunca se mezclan con bolsones ni unidades.
+function normalizarUnidad(unidad){
+  const original = String(unidad ?? "").trim();
+  const clave = original.toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/³/g, "3").replace(/[.\s_-]/g, "");
+  if(["m3","metrocubico","metroscubicos","metro3","metros3"].includes(clave)) return "m³";
+  if(["bolson","bolsones"].includes(clave)) return "bolsón";
+  if(["unidad","unidades","u"].includes(clave)) return "unidad";
+  return original || "Sin unidad";
+}
+function cantidadNumero(valor){
+  if(typeof valor === "number") return Number.isFinite(valor) ? valor : 0;
+  const texto = String(valor ?? "").trim();
+  if(!texto) return 0;
+  const normalizado = texto.includes(",") ? texto.replace(/\./g, "").replace(",", ".") : texto;
+  const numero = Number(normalizado);
+  return Number.isFinite(numero) ? numero : 0;
+}
 // Suma cantidades separadas por unidad (m³, bolsón, unidad) — nunca las mezcla en un solo número.
 function resumenCantidades(lineas){
   const m = {};
-  lineas.forEach(l=>{ if(!l.cantidad) return; m[l.unidad||"—"] = (m[l.unidad||"—"]||0) + Number(l.cantidad); });
+  lineas.forEach(l=>{ const cantidad = cantidadNumero(l.cantidad); if(!cantidad) return; const unidad = normalizarUnidad(l.unidad); m[unidad] = (m[unidad]||0) + cantidad; });
   const partes = Object.entries(m).map(([u,c])=>`${c.toLocaleString("es-AR",{maximumFractionDigits:1})} ${u}`);
   return partes.length ? partes.join(" · ") : "—";
 }
@@ -562,11 +581,13 @@ function renderCategoriaCliente(lineas){
 function renderPrecioUnitario(lineas){
   const porCliente = {};
   lineas.forEach(l=>{
-    if(!l.cantidad) return;
-    const k = l.cliente + "||" + l.unidad;
-    if(!porCliente[k]) porCliente[k] = {total:0, cantidad:0, nombre:l.cliente, unidad:l.unidad};
+    const cantidad = cantidadNumero(l.cantidad);
+    if(!cantidad) return;
+    const unidad = normalizarUnidad(l.unidad);
+    const k = l.cliente + "||" + unidad;
+    if(!porCliente[k]) porCliente[k] = {total:0, cantidad:0, nombre:l.cliente, unidad};
     porCliente[k].total += l.total;
-    porCliente[k].cantidad += Number(l.cantidad);
+    porCliente[k].cantidad += cantidad;
   });
   const conPrecio = Object.values(porCliente)
     .filter(d=>d.cantidad>0)
@@ -588,7 +609,7 @@ function renderPrecioUnitario(lineas){
 
 function renderKpisCantidad(lineas){
   const m = {};
-  lineas.forEach(l=>{ if(!l.cantidad) return; m[l.unidad] = (m[l.unidad]||0) + Number(l.cantidad); });
+  lineas.forEach(l=>{ const cantidad = cantidadNumero(l.cantidad); if(!cantidad) return; const unidad = normalizarUnidad(l.unidad); m[unidad] = (m[unidad]||0) + cantidad; });
   const cont = document.getElementById("kpisCantidad");
   const entradas = Object.entries(m).sort((a,b)=>b[1]-a[1]);
   if(!entradas.length){ cont.innerHTML = `<div class="vacio">Sin datos para este filtro.</div>`; return; }
@@ -659,6 +680,55 @@ function renderResumen(){
 }
 
 // ================= GESTIÓN VENDEDOR (Franco) =================
+function poblarFiltrosGestion(){
+  const selMes = document.getElementById("fGestionMes");
+  const meses = [...new Set(LINEAS.filter(l=>l.deFranco).map(l=>`${l.anio}-${String(l.mes).padStart(2,"0")}`))].sort();
+  meses.forEach(m=>{
+    const [anio,mes] = m.split("-");
+    const op = document.createElement("option");
+    op.value = m; op.textContent = `${MESES[parseInt(mes)]} ${anio}`;
+    selMes.appendChild(op);
+  });
+}
+
+function filtrarGestion(){
+  const mes = document.getElementById("fGestionMes").value;
+  const modalidad = document.getElementById("fGestionModalidad").value;
+  return LINEAS.filter(l=>{
+    if(!l.deFranco) return false;
+    if(mes!=="todos" && `${l.anio}-${String(l.mes).padStart(2,"0")}`!==mes) return false;
+    if(modalidad!=="todos" && l.modalidad!==modalidad) return false;
+    return true;
+  });
+}
+
+function renderTopClientesGestion(lineas){
+  const porFacturacion = {};
+  const porM3 = {};
+  lineas.forEach(l=>{
+    const cliente = l.cliente || "Sin cliente";
+    porFacturacion[cliente] = (porFacturacion[cliente]||0) + Number(l.total||0);
+    if(normalizarUnidad(l.unidad)==="m³") porM3[cliente] = (porM3[cliente]||0) + cantidadNumero(l.cantidad);
+  });
+  const topFacturacion = Object.entries(porFacturacion).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const topM3 = Object.entries(porM3).filter(([,cantidad])=>cantidad>0).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const acortar = texto => texto.length>27 ? texto.slice(0,25)+"…" : texto;
+  const crearGrafico = (id, instancia, datos, formato, color, titulo) => {
+    const ctx = document.getElementById(id);
+    if(instancia) instancia.destroy();
+    return new Chart(ctx, {
+      type:"bar",
+      data:{ labels:datos.map(([cliente])=>acortar(cliente)), datasets:[{label:titulo, data:datos.map(([,valor])=>valor), backgroundColor:color, borderRadius:3}] },
+      options:{ indexAxis:"y", layout:{padding:{right:62}},
+        plugins:{ legend:{display:false}, tooltip:{callbacks:{title:c=>datos[c[0].dataIndex][0], label:c=>formato(c.parsed.x)}}, datalabels:datalabelsBarraH(formato) },
+        scales:{ x:{ beginAtZero:true, ticks:{ callback:formato } }, y:{ ticks:{ font:{size:10} } } }
+      }
+    });
+  };
+  chartGestionClientesFacturacion = crearGrafico("chartGestionClientesFacturacion", chartGestionClientesFacturacion, topFacturacion, moneda, "#3f4a29", "Facturación");
+  chartGestionClientesM3 = crearGrafico("chartGestionClientesM3", chartGestionClientesM3, topM3, v=>v.toLocaleString("es-AR",{maximumFractionDigits:1})+" m³", "#8ba05e", "Volumen (m³)");
+}
+
 function renderComision(){
   const cont = document.getElementById("comisionCont");
   if(!COMISION.length){
@@ -722,21 +792,27 @@ function renderComision(){
 
   sinCruzarCont.innerHTML = bloques.join("");
 
-  const deFranco = LINEAS.filter(l=>l.deFranco);
+  const deFranco = filtrarGestion();
   const total = deFranco.reduce((s,l)=>s+l.total,0);
-  const ultimo = COMISION.length ? COMISION[COMISION.length-1] : null;
-  const totalEmpresaMismoMes = ultimo ? LINEAS.filter(l=>l.anio===ultimo.anio && l.mes===ultimo.mes).reduce((s,l)=>s+l.total,0) : 0;
-  const pct = (ultimo && totalEmpresaMismoMes) ? (ultimo.facturacion/totalEmpresaMismoMes*100).toFixed(1) : "—";
+  const mesGestion = document.getElementById("fGestionMes").value;
+  const modalidadGestion = document.getElementById("fGestionModalidad").value;
+  const totalEmpresaMismoPeriodo = LINEAS.filter(l=>{
+    if(mesGestion!=="todos" && `${l.anio}-${String(l.mes).padStart(2,"0")}`!==mesGestion) return false;
+    if(modalidadGestion!=="todos" && l.modalidad!==modalidadGestion) return false;
+    return true;
+  }).reduce((s,l)=>s+l.total,0);
+  const pct = totalEmpresaMismoPeriodo ? (total/totalEmpresaMismoPeriodo*100).toFixed(1) : "—";
   const pedidos = new Set(deFranco.map(l=>l.sistema+"|"+l.referencia)).size;
   const clientes = new Set(deFranco.map(l=>l.cliente)).size;
   document.getElementById("francoKpis").innerHTML = `
-    <div class="kpi"><div class="kpi__label">% sobre facturación total del mes</div><div class="kpi__valor">${pct}${pct!=="—"?"%":""}</div>
-      <div class="kpi__sub">del mes de comisión mostrado arriba</div></div>
-    <div class="kpi"><div class="kpi__label">Pedidos atribuidos (histórico)</div><div class="kpi__valor">${pedidos}</div></div>
+    <div class="kpi"><div class="kpi__label">% sobre facturación de empresa</div><div class="kpi__valor">${pct}${pct!=="—"?"%":""}</div>
+      <div class="kpi__sub">para el período y modalidad seleccionados</div></div>
+    <div class="kpi"><div class="kpi__label">Pedidos atribuidos</div><div class="kpi__valor">${pedidos}</div></div>
     <div class="kpi"><div class="kpi__label">Clientes atribuidos</div><div class="kpi__valor">${clientes}</div></div>
-    <div class="kpi"><div class="kpi__label">Facturación histórica atribuida</div><div class="kpi__valor">${moneda(total)}</div></div>
+    <div class="kpi"><div class="kpi__label">Facturación atribuida</div><div class="kpi__valor">${moneda(total)}</div></div>
   `;
 
+  renderTopClientesGestion(deFranco);
   renderEmbudo();
 }
 
@@ -927,7 +1003,7 @@ function buscarCliente(nombreExacto){
   todasDelCliente.forEach(l=>{
     const k = `${l.anio}-${String(l.mes).padStart(2,"0")}`;
     porMesFact[k] = (porMesFact[k]||0) + l.total;
-    if(l.unidad==="m³") porMesVol[k] = (porMesVol[k]||0) + Number(l.cantidad||0);
+    if(normalizarUnidad(l.unidad)==="m³") porMesVol[k] = (porMesVol[k]||0) + cantidadNumero(l.cantidad);
   });
   const clavesEvol = Object.keys(porMesFact).sort();
   const ctxEvol = document.getElementById("chartEvolucionCliente");
@@ -1042,8 +1118,28 @@ async function cargar(){
       <div class="pestana" id="pestana-franco">
         <div id="comisionCont"></div>
         <div id="sinCruzarCont"></div>
-        <div class="seccion-titulo">Desempeño histórico</div>
+        <div class="seccion-titulo">Desempeño comercial</div>
+        <div class="filtros">
+          <div class="filtros__grupo"><label for="fGestionMes">Mes</label><select id="fGestionMes"><option value="todos">Todo el historial</option></select></div>
+          <div class="filtros__grupo"><label for="fGestionModalidad">Modalidad</label>
+            <select id="fGestionModalidad"><option value="todos">Todas</option>
+              <option value="Retiro en Cantera">Retiro en Cantera</option>
+              <option value="Retiro en Depósito">Retiro en Depósito</option>
+              <option value="Entrega en Obra">Entrega en Obra</option></select></div>
+        </div>
         <div class="kpis" id="francoKpis"></div>
+        <div class="paneles paneles--2">
+          <div class="panel">
+            <h3>Top 10 clientes por facturación</h3>
+            <div class="panel__sub">Ventas atribuidas a Franco, según los filtros de esta pestaña</div>
+            <canvas id="chartGestionClientesFacturacion"></canvas>
+          </div>
+          <div class="panel">
+            <h3>Top 10 clientes por volumen</h3>
+            <div class="panel__sub">Solo metros cúbicos: no incorpora bolsones ni unidades</div>
+            <canvas id="chartGestionClientesM3"></canvas>
+          </div>
+        </div>
         <div class="panel panel--full">
           <h3>Embudo comercial</h3>
           <div class="panel__sub">Todas las oportunidades de Franco en el CRM, por etapa — mide su gestión, no solo lo que factura</div>
@@ -1074,6 +1170,7 @@ async function cargar(){
     `;
 
     poblarFiltros();
+    poblarFiltrosGestion();
     poblarBuscador();
     renderResumen();
     renderComision();
@@ -1082,6 +1179,9 @@ async function cargar(){
 
     ["fMes","fVendedor","fModalidad"].forEach(id=>{
       document.getElementById(id).addEventListener("change", renderResumen);
+    });
+    ["fGestionMes","fGestionModalidad"].forEach(id=>{
+      document.getElementById(id).addEventListener("change", renderComision);
     });
 
     document.getElementById("actualizado").textContent = fechaHora(data.actualizado);

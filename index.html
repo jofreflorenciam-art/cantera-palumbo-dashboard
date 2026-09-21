@@ -261,7 +261,7 @@ function datalabelsBarraH(formatFn){
     formatter: formatFn || (v=>monedaCorta(v)) };
 }
 
-let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [], EMPRESAS_SIN_CRUZAR = [], EMBUDO = null;
+let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [], EMPRESAS_SIN_CRUZAR = [], EMBUDO = null, PEDIDOS_FRANCO_SIN_OPORTUNIDAD = [];
 let chartClientes=null, chartModalidad=null, chartCategoria=null, chartTendencia=null,
     chartPrecio=null, chartDiaCliente=null, chartCatClienteMonto=null, chartCatClientePedidos=null,
     chartEvolucionCliente=null;
@@ -689,16 +689,38 @@ function renderComision(){
   }
 
   const sinCruzarCont = document.getElementById("sinCruzarCont");
+  const bloques = [];
+
   if(EMPRESAS_SIN_CRUZAR.length){
-    sinCruzarCont.innerHTML = `<div class="alerta" style="margin-bottom:24px;">
+    bloques.push(`<div class="alerta" style="margin-bottom:16px;">
       <div class="alerta__cabecera"><span class="alerta__numero">${EMPRESAS_SIN_CRUZAR.length}</span>
       <span class="alerta__titulo">empresas Ganado de Franco que no encontré en Ventas/POS</span></div>
-      <p class="alerta__texto">Están cargadas como Ganado en el CRM pero el nombre no matcheó con ningún Cliente de Ventas o POS — revisá si están escritas distinto entre sistemas. No suman a la comisión hasta que se resuelva.</p>
+      <p class="alerta__texto">Están cargadas como Ganado en el CRM pero el nombre no matcheó con ningún Cliente de Ventas o POS — revisá si están escritas distinto entre sistemas.</p>
       <div style="font-size:13px; line-height:1.9;">${EMPRESAS_SIN_CRUZAR.map(e=>`• ${e}`).join("<br>")}</div>
-    </div>`;
-  } else {
-    sinCruzarCont.innerHTML = "";
+    </div>`);
   }
+
+  if(PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length){
+    const porCliente = {};
+    PEDIDOS_FRANCO_SIN_OPORTUNIDAD.forEach(p=>{
+      if(!porCliente[p.cliente]) porCliente[p.cliente] = {total:0, referencias:new Set()};
+      porCliente[p.cliente].total += p.total;
+      porCliente[p.cliente].referencias.add(p.sistema+"|"+p.referencia);
+    });
+    const filas = Object.entries(porCliente).sort((a,b)=>b[1].total-a[1].total)
+      .map(([cliente,d])=>`<div class="oportunidad" style="grid-template-columns:1fr auto;">
+        <div class="oportunidad__nombre">${cliente}</div>
+        <div style="text-align:right;"><strong>${moneda(d.total)}</strong><div class="oportunidad__fechas">${d.referencias.size} pedido(s)</div></div>
+      </div>`).join("");
+    bloques.push(`<div class="alerta" style="margin-bottom:16px;">
+      <div class="alerta__cabecera"><span class="alerta__numero">${Object.keys(porCliente).length}</span>
+      <span class="alerta__titulo">clientes que Franco facturó y ya suman a su comisión, pero no tienen su registro en el CRM</span></div>
+      <p class="alerta__texto">Estos pedidos cuentan igual para la comisión — Franco los cargó, así que se vendieron. Falta nada más cargar la Oportunidad correspondiente en el CRM para que quede prolijo, pero la plata ya está sumada.</p>
+      ${filas}
+    </div>`);
+  }
+
+  sinCruzarCont.innerHTML = bloques.join("");
 
   const deFranco = LINEAS.filter(l=>l.deFranco);
   const total = deFranco.reduce((s,l)=>s+l.total,0);
@@ -741,28 +763,53 @@ function renderEmbudo(){
 // ================= ALERTAS =================
 function renderAlerta(){
   const cont = document.getElementById("alertaCont");
+  const totalAlertas = GANADO.length + PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length;
+
+  document.getElementById("contadorAlertas").style.display = totalAlertas ? "inline-block" : "none";
+  document.getElementById("contadorAlertas").textContent = totalAlertas;
+
+  let bloque1;
   if(!GANADO.length){
-    cont.innerHTML = `<div class="alerta"><div class="alerta__cabecera"><span class="alerta__numero">0</span>
+    bloque1 = `<div class="alerta" style="margin-bottom:20px;"><div class="alerta__cabecera"><span class="alerta__numero">0</span>
       <span class="alerta__titulo">oportunidades ganadas sin pedido vinculado</span></div>
       <p class="alerta__texto">No hay pendientes — todas las Ganado tienen su pedido cargado en Odoo.</p></div>`;
-    document.getElementById("contadorAlertas").style.display = "none";
-    return;
+  } else {
+    const items = GANADO.map(o=>{
+      const notas = o.notas && o.notas.trim() ? o.notas : "Sin notas de gestión cargadas";
+      const notasClase = o.notas && o.notas.trim() ? "" : "vacia";
+      return `<div class="oportunidad">
+        <div><div class="oportunidad__nombre">${o.oportunidad||"(sin nombre)"}</div>
+        <div class="oportunidad__empresa">${o.empresa||"—"}</div></div>
+        <div class="oportunidad__fechas">Creada ${fechaCorta(o.creadoEl)}<br>Cerrada ${fechaCorta(o.fechaCierre)}</div>
+        <div class="oportunidad__notas ${notasClase}">${notas}</div></div>`;
+    }).join("");
+    bloque1 = `<div class="alerta" style="margin-bottom:20px;"><div class="alerta__cabecera"><span class="alerta__numero">${GANADO.length}</span>
+      <span class="alerta__titulo">oportunidades ganadas sin pedido vinculado</span></div>
+      <p class="alerta__texto">Están marcadas Ganado pero no tienen pedido de venta asociado — Franco tiene que revisarlas.</p>
+      ${items}</div>`;
   }
-  document.getElementById("contadorAlertas").style.display = "inline-block";
-  document.getElementById("contadorAlertas").textContent = GANADO.length;
-  const items = GANADO.map(o=>{
-    const notas = o.notas && o.notas.trim() ? o.notas : "Sin notas de gestión cargadas";
-    const notasClase = o.notas && o.notas.trim() ? "" : "vacia";
-    return `<div class="oportunidad">
-      <div><div class="oportunidad__nombre">${o.oportunidad||"(sin nombre)"}</div>
-      <div class="oportunidad__empresa">${o.empresa||"—"}</div></div>
-      <div class="oportunidad__fechas">Creada ${fechaCorta(o.creadoEl)}<br>Cerrada ${fechaCorta(o.fechaCierre)}</div>
-      <div class="oportunidad__notas ${notasClase}">${notas}</div></div>`;
-  }).join("");
-  cont.innerHTML = `<div class="alerta"><div class="alerta__cabecera"><span class="alerta__numero">${GANADO.length}</span>
-    <span class="alerta__titulo">oportunidades ganadas sin pedido vinculado</span></div>
-    <p class="alerta__texto">Están marcadas Ganado pero no tienen pedido de venta asociado — Franco tiene que revisarlas.</p>
-    ${items}</div>`;
+
+  let bloque2;
+  if(!PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length){
+    bloque2 = `<div class="alerta"><div class="alerta__cabecera"><span class="alerta__numero">0</span>
+      <span class="alerta__titulo">pedidos de Franco sin Oportunidad Ganado en el CRM</span></div>
+      <p class="alerta__texto">Todo pedido cargado por Franco tiene su oportunidad respaldándolo en el CRM.</p></div>`;
+  } else {
+    const totalMonto = PEDIDOS_FRANCO_SIN_OPORTUNIDAD.reduce((s,p)=>s+p.total,0);
+    const items = PEDIDOS_FRANCO_SIN_OPORTUNIDAD
+      .sort((a,b)=>new Date(b.fecha)-new Date(a.fecha))
+      .map(p=>`<div class="oportunidad">
+        <div><div class="oportunidad__nombre">${p.cliente}</div>
+        <div class="oportunidad__empresa">${p.sistema} — ${p.referencia}</div></div>
+        <div class="oportunidad__fechas">${fechaCorta(p.fecha)}<br>${moneda(p.total)}</div>
+      </div>`).join("");
+    bloque2 = `<div class="alerta"><div class="alerta__cabecera"><span class="alerta__numero">${PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length}</span>
+      <span class="alerta__titulo">pedidos de Franco sin Oportunidad Ganado en el CRM</span></div>
+      <p class="alerta__texto"><strong>Estos SÍ suman a su comisión</strong> — si él cargó el pedido es porque la venta fue suya. Esto es solo un recordatorio de que a esos clientes les falta la oportunidad en el CRM (para que quede prolijo y no dependan de acordarse cada vez que compran de nuevo). Total sin registrar: ${moneda(totalMonto)}.</p>
+      ${items}</div>`;
+  }
+
+  cont.innerHTML = bloque1 + bloque2;
 }
 
 // ================= BUSCADOR DE CLIENTE (autocompletar propio) =================
@@ -912,6 +959,8 @@ async function cargar(){
     GANADO = data.ganadoSinPedido || [];
     EMPRESAS_SIN_CRUZAR = data.empresasFrancoSinCruzar || [];
     EMBUDO = data.embudoFranco || null;
+    PEDIDOS_FRANCO_SIN_OPORTUNIDAD = data.pedidosFrancoSinOportunidad || [];
+    PEDIDOS_FRANCO_SIN_OPORTUNIDAD = data.pedidosFrancoSinOportunidad || [];
 
     document.getElementById("contenido").innerHTML = `
       <div class="pestana activa" id="pestana-resumen">

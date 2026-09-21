@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>
   :root{
     --negro:#141311; --negro2:#1c1a16; --verde:#5f6f3d; --verde-claro:#8ba05e; --verde-oscuro:#3f4a29;
@@ -136,6 +137,10 @@
     border-radius:4px; background:var(--crema);
   }
   .buscador-cliente input:focus{outline:2px solid var(--verde); outline-offset:1px;}
+  .buscador-cliente select{
+    background:#fff; color:var(--negro); border:1px solid var(--linea); border-radius:4px;
+    padding:7px 10px; font-family:inherit; font-size:13px; font-weight:600;
+  }
   .autocomplete{
     position:absolute; left:22px; right:22px; top:100%; margin-top:-2px; background:#fff;
     border:1px solid var(--linea); border-top:none; border-radius:0 0 6px 6px; box-shadow:var(--sombra);
@@ -228,7 +233,27 @@ const MESES_LARGO = ["","enero","febrero","marzo","abril","mayo","junio","julio"
 const DIAS = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
 const VERDES = ["#5f6f3d","#8ba05e","#a3b47b","#bcc99c","#d4dcbd","#3f4a29","#728258","#93a170"];
 
-let LINEAS = [], COMISION = [], GANADO = [];
+Chart.register(ChartDataLabels);
+Chart.defaults.set('plugins.datalabels', { display:false }); // opt-in por gráfico, no todos lo necesitan
+
+function monedaCorta(n){
+  if(!n) return "$0";
+  const abs = Math.abs(n);
+  if(abs>=1e6) return "$"+(n/1e6).toFixed(1).replace(/\.0$/,"")+"M";
+  if(abs>=1e3) return "$"+(n/1e3).toFixed(0)+"K";
+  return "$"+Math.round(n);
+}
+// Config de datalabels lista para pegar en cualquier chart de barras: el número arriba de la columna.
+function datalabelsBarra(formatFn){
+  return { anchor:"end", align:"end", offset:2, color:"#141311", font:{size:10.5,weight:"700"},
+    formatter: formatFn || (v=>monedaCorta(v)) };
+}
+function datalabelsBarraH(formatFn){
+  return { anchor:"end", align:"end", offset:4, color:"#141311", font:{size:10.5,weight:"700"},
+    formatter: formatFn || (v=>monedaCorta(v)) };
+}
+
+let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [];
 let chartClientes=null, chartModalidad=null, chartCategoria=null, chartTendencia=null,
     chartPrecio=null, chartDiaCliente=null, chartCatClienteMonto=null, chartCatClientePedidos=null;
 
@@ -347,9 +372,10 @@ function renderTablaVendedores(lineas){
   const m = {};
   lineas.forEach(l=>{
     const k = l.vendedor || "Sin dato";
-    if(!m[k]) m[k] = {total:0, pedidos:new Set()};
+    if(!m[k]) m[k] = {total:0, pedidos:new Set(), porSistema:{}};
     m[k].total += l.total;
     m[k].pedidos.add(l.sistema+"|"+l.referencia);
+    m[k].porSistema[l.sistema] = (m[k].porSistema[l.sistema]||0) + 1;
   });
   const totalGlobal = Object.values(m).reduce((s,v)=>s+v.total,0);
   const filas = Object.entries(m).sort((a,b)=>b[1].total-a[1].total).map(([nombre,d])=>{
@@ -358,8 +384,13 @@ function renderTablaVendedores(lineas){
     const clase = esSinDato ? "sindato" : (esMostrador ? "mostrador" : "");
     const etiqueta = esSinDato ? "revisar export" : (esMostrador ? "mostrador" : "gestión");
     const pct = totalGlobal ? (d.total/totalGlobal*100).toFixed(1) : "0";
+    const detalleSistema = esSinDato
+      ? `<div style="font-size:11px; color:var(--texto-sec); margin-top:2px;">Líneas sin vendedor cargado: ${
+          Object.entries(d.porSistema).map(([s,c])=>`${c} de ${s}`).join(" · ")
+        }</div>`
+      : "";
     return `<tr>
-      <td>${nombre} <span class="badge-origen ${clase}">${etiqueta}</span></td>
+      <td>${nombre} <span class="badge-origen ${clase}">${etiqueta}</span>${detalleSistema}</td>
       <td class="num">${moneda(d.total)}</td>
       <td class="num">${d.pedidos.size}</td>
       <td class="num">${pct}%</td>
@@ -405,23 +436,36 @@ function renderTopClientes(lineas){
   chartClientes = new Chart(ctx, {
     type:"bar",
     data:{ labels: top.map(t=>t[0]), datasets:[{ data: top.map(t=>t[1]), backgroundColor: coloresN(top.length), borderRadius:3 }] },
-    options:{ indexAxis:"y", plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.x)}} },
+    options:{ indexAxis:"y", layout:{padding:{right:56}},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.x)}}, datalabels: datalabelsBarraH() },
       scales:{ x:{ ticks:{ callback:v=>"$"+(v/1e6).toFixed(1)+"M" } } },
-      onClick:(evt,elems)=>{ if(!elems.length) return; mostrarDetalleClienteResumen(top[elems[0].index][0], lineas); } }
+      onClick:(evt,elems)=>{
+        if(!elems.length) return;
+        const nombre = top[elems[0].index][0];
+        const li = ul.querySelector(`li[data-cliente="${nombre.replace(/"/g,'\\"')}"]`);
+        mostrarDetalleClienteResumen(nombre, li);
+      } }
   });
 
   ul.querySelectorAll("li").forEach(li=>{
-    li.addEventListener("click", ()=> mostrarDetalleClienteResumen(li.dataset.cliente, lineas));
+    li.addEventListener("click", ()=> mostrarDetalleClienteResumen(li.dataset.cliente, li));
   });
 }
 
-function mostrarDetalleClienteResumen(nombre, lineas){
-  const propias = lineas.filter(l=>l.cliente===nombre);
+// Mueve la tarjeta de detalle justo debajo del <li> tocado (en la lista o desde el gráfico),
+// en vez de dejarla siempre fija al final de todo.
+function mostrarDetalleClienteResumen(nombre, liReferencia){
+  const div = document.getElementById("detalleClienteResumen");
+  const yaAbiertoParaEste = div.classList.contains("activo") && div.dataset.clienteActual === nombre;
+  if(yaAbiertoParaEste){
+    div.classList.remove("activo");
+    return;
+  }
+  const propias = LINEAS_FILTRADAS.filter(l=>l.cliente===nombre);
   const total = propias.reduce((s,l)=>s+l.total,0);
   const pedidos = new Set(propias.map(l=>l.sistema+"|"+l.referencia)).size;
   const porProducto = agrupar(propias,"producto");
   const top = Object.entries(porProducto).sort((a,b)=>b[1]-a[1])[0];
-  const div = document.getElementById("detalleClienteResumen");
   div.innerHTML = `
     <div class="detalle-cliente__top">
       <div><div class="detalle-cliente__nombre">${nombre}</div>
@@ -434,6 +478,8 @@ function mostrarDetalleClienteResumen(nombre, lineas){
       <div>Cantidad total<strong style="font-size:13px;">${resumenCantidades(propias)}</strong></div>
       <div>Producto principal<strong style="font-size:13px;">${top?top[0]:"—"}</strong></div>
     </div>`;
+  div.dataset.clienteActual = nombre;
+  if(liReferencia) liReferencia.insertAdjacentElement("afterend", div);
   div.classList.add("activo");
 }
 
@@ -445,7 +491,9 @@ function renderModalidad(lineas){
   chartModalidad = new Chart(ctx, {
     type:"doughnut",
     data:{ labels: entradas.map(e=>e[0]), datasets:[{ data: entradas.map(e=>e[1]), backgroundColor: coloresN(entradas.length), borderColor:"#fff", borderWidth:2 }] },
-    options:{ plugins:{ legend:{position:"bottom", labels:{boxWidth:12,font:{size:11}}}, tooltip:{callbacks:{label:c=>`${c.label}: ${moneda(c.parsed)}`}} } }
+    options:{ plugins:{ legend:{position:"bottom", labels:{boxWidth:12,font:{size:11}}},
+      tooltip:{callbacks:{label:c=>`${c.label}: ${moneda(c.parsed)}`}},
+      datalabels:{ color:"#fff", font:{size:11,weight:"700"}, formatter:v=>monedaCorta(v) } } }
   });
 }
 
@@ -457,7 +505,8 @@ function renderCategoria(lineas){
   chartCategoria = new Chart(ctx, {
     type:"bar",
     data:{ labels: entradas.map(e=>e[0]), datasets:[{ data: entradas.map(e=>e[1]), backgroundColor:"#8ba05e", borderRadius:3 }] },
-    options:{ plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}} },
+    options:{ layout:{padding:{top:22}},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}}, datalabels: datalabelsBarra() },
       scales:{ y:{ ticks:{ callback:v=>"$"+(v/1e6).toFixed(1)+"M" } } } }
   });
 }
@@ -473,7 +522,8 @@ function renderCategoriaCliente(lineas){
   chartCatClienteMonto = new Chart(ctx1, {
     type:"bar",
     data:{ labels: entradasMonto.map(e=>e[0]), datasets:[{ data: entradasMonto.map(e=>e[1]), backgroundColor:"#5f6f3d", borderRadius:3 }] },
-    options:{ plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}} },
+    options:{ layout:{padding:{top:22}},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}}, datalabels: datalabelsBarra() },
       scales:{ y:{ ticks:{ callback:v=>"$"+(v/1e6).toFixed(1)+"M" } } } }
   });
 
@@ -482,7 +532,9 @@ function renderCategoriaCliente(lineas){
   chartCatClientePedidos = new Chart(ctx2, {
     type:"bar",
     data:{ labels: entradasPedidos.map(e=>e[0]), datasets:[{ data: entradasPedidos.map(e=>e[1]), backgroundColor:"#3f4a29", borderRadius:3 }] },
-    options:{ plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>c.parsed.y+" pedidos"}} } }
+    options:{ layout:{padding:{top:22}},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>c.parsed.y+" pedidos"}}, datalabels: datalabelsBarra(v=>v) },
+      scales:{ y:{ ticks:{ precision:0 } } } }
   });
 }
 
@@ -497,20 +549,25 @@ function renderPrecioUnitario(lineas){
   });
   const conPrecio = Object.values(porCliente)
     .filter(d=>d.cantidad>0)
-    .map(d=>({nombre:`${d.nombre} (${d.unidad})`, precio: d.total/d.cantidad, total: d.total}));
+    .map(d=>({nombre:d.nombre, unidad:d.unidad, precio: d.total/d.cantidad, total: d.total}));
   const top = conPrecio.sort((a,b)=>b.total-a.total).slice(0,10);
+  const acortar = s => s.length>22 ? s.slice(0,20)+"…" : s;
   const ctx = document.getElementById("chartPrecio");
   if(chartPrecio) chartPrecio.destroy();
   chartPrecio = new Chart(ctx, {
     type:"bar",
-    data:{ labels: top.map(t=>t.nombre), datasets:[{ data: top.map(t=>t.precio), backgroundColor:"#3f4a29", borderRadius:3 }] },
-    options:{ plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)+" / unidad"}} },
-      scales:{ y:{ ticks:{ callback:v=>"$"+Math.round(v).toLocaleString("es-AR") } } } }
+    data:{ labels: top.map(t=>`${acortar(t.nombre)} (${t.unidad})`), datasets:[{ data: top.map(t=>t.precio), backgroundColor:"#3f4a29", borderRadius:3 }] },
+    options:{ indexAxis:"y", layout:{padding:{right:60}},
+      plugins:{ legend:{display:false},
+        tooltip:{ callbacks:{ title: c => top[c[0].dataIndex].nombre, label: c => moneda(c.parsed.x)+" / "+top[c.dataIndex].unidad } },
+        datalabels: datalabelsBarraH(v=>moneda(v)) },
+      scales:{ x:{ ticks:{ callback:v=>"$"+Math.round(v).toLocaleString("es-AR") } } } }
   });
 }
 
 function renderResumen(){
   const filtradas = filtrarResumen();
+  LINEAS_FILTRADAS = filtradas;
   renderKpisResumen(filtradas);
   renderTablaVendedores(filtradas);
   renderTopClientes(filtradas);
@@ -600,6 +657,14 @@ let resaltadoIdx = -1;
 
 function poblarBuscador(){
   NOMBRES_CLIENTES = [...new Set(LINEAS.map(l=>l.cliente).filter(Boolean))].sort();
+  const meses = [...new Set(LINEAS.map(l=>`${l.anio}-${String(l.mes).padStart(2,"0")}`))].sort();
+  const sel = document.getElementById("fMesCliente");
+  meses.forEach(m=>{
+    const [a,mm] = m.split("-");
+    const op = document.createElement("option");
+    op.value = m; op.textContent = `${MESES[parseInt(mm)]} ${a}`;
+    sel.appendChild(op);
+  });
 }
 
 function etiquetaDeCliente(nombre){
@@ -639,9 +704,15 @@ function buscarCliente(nombreExacto){
   const nombre = nombreExacto || document.getElementById("inputCliente").value.trim();
   const resultado = document.getElementById("resultadoCliente");
   if(!nombre){ resultado.innerHTML = ""; return; }
-  const propias = LINEAS.filter(l=>l.cliente.toLowerCase()===nombre.toLowerCase());
+  const mesElegido = document.getElementById("fMesCliente").value;
+  let propias = LINEAS.filter(l=>l.cliente.toLowerCase()===nombre.toLowerCase());
+  if(mesElegido!=="todos"){
+    propias = propias.filter(l=>`${l.anio}-${String(l.mes).padStart(2,"0")}`===mesElegido);
+  }
+  const [aSel,mmSel] = mesElegido==="todos" ? [null,null] : mesElegido.split("-");
+  const etiquetaPeriodo = mesElegido==="todos" ? "Todo el historial" : `${MESES_LARGO[parseInt(mmSel)]} ${aSel}`;
   if(!propias.length){
-    resultado.innerHTML = `<div class="vacio">No encontré ventas para "${nombre}" — elegilo de la lista desplegable para asegurar que el nombre coincida exacto.</div>`;
+    resultado.innerHTML = `<div class="vacio">No encontré ventas para "${nombre}" en ${etiquetaPeriodo.toLowerCase()} — elegilo de la lista desplegable, o probá con "Todo el historial".</div>`;
     return;
   }
   const total = propias.reduce((s,l)=>s+l.total,0);
@@ -655,17 +726,18 @@ function buscarCliente(nombreExacto){
     <div class="detalle-cliente activo">
       <div class="detalle-cliente__top">
         <div><div class="detalle-cliente__nombre">${propias[0].cliente}</div>
-        <span class="detalle-cliente__et">${propias[0].etiquetaCliente||"Sin clasificar"}</span></div>
+        <span class="detalle-cliente__et">${propias[0].etiquetaCliente||"Sin clasificar"}</span>
+        <span class="detalle-cliente__et" style="background:#3f4a29;">${etiquetaPeriodo}</span></div>
       </div>
       <div class="detalle-cliente__grid">
-        <div>Facturación total<strong>${moneda(total)}</strong></div>
+        <div>Facturación en este período<strong>${moneda(total)}</strong></div>
         <div>Pedidos<strong>${pedidos}</strong></div>
         <div>Cantidad total<strong style="font-size:13px;">${resumenCantidades(propias)}</strong></div>
         <div>Vendedor/Cajero<strong style="font-size:13px;">${[...new Set(propias.map(l=>l.vendedor))].join(", ")}</strong></div>
       </div>
-      <div class="seccion-titulo" style="color:#a9a79c; margin-top:6px;">Qué día de la semana compra</div>
+      <div class="seccion-titulo" style="color:#a9a79c; margin-top:6px;">Qué día de la semana compra — ${etiquetaPeriodo.toLowerCase()}</div>
       <canvas id="chartDiaCliente"></canvas>
-      <div class="seccion-titulo" style="color:#a9a79c; margin-top:16px;">Productos comprados</div>
+      <div class="seccion-titulo" style="color:#a9a79c; margin-top:16px;">Productos comprados en este período</div>
       <table>
         <tr><th>Producto</th><th style="text-align:right;">Facturación</th></tr>
         ${productos.map(([p,t])=>`<tr><td>${p}</td><td style="text-align:right;">${moneda(t)}</td></tr>`).join("")}
@@ -677,7 +749,9 @@ function buscarCliente(nombreExacto){
   chartDiaCliente = new Chart(ctx, {
     type:"bar",
     data:{ labels: DIAS.map(d=>d.slice(0,3)), datasets:[{ data: porDia, backgroundColor:"#8ba05e", borderRadius:3 }] },
-    options:{ plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}} },
+    options:{ layout:{padding:{top:22}},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>moneda(c.parsed.y)}},
+        datalabels:{ anchor:"end", align:"end", offset:2, color:"#efeee9", font:{size:10,weight:"700"}, formatter:v=>monedaCorta(v) } },
       scales:{ y:{ ticks:{ color:"#a9a79c", callback:v=>"$"+(v/1e3).toFixed(0)+"K" } }, x:{ ticks:{color:"#a9a79c"} } } }
   });
 }
@@ -774,6 +848,12 @@ async function cargar(){
             oninput="actualizarAutocomplete()" onfocus="actualizarAutocomplete()"
             onkeydown="if(event.key==='Enter'){document.getElementById('autocomplete').classList.remove('abierto'); buscarCliente();}">
           <div class="autocomplete" id="autocomplete"></div>
+          <div style="margin-top:14px; display:flex; align-items:center; gap:8px;">
+            <label for="fMesCliente" style="font-size:11px; font-weight:700; color:var(--texto-sec); text-transform:uppercase; letter-spacing:.04em;">Mes</label>
+            <select id="fMesCliente" onchange="buscarCliente()">
+              <option value="todos">Todo el historial</option>
+            </select>
+          </div>
         </div>
         <div id="resultadoCliente"></div>
       </div>

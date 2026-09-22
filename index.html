@@ -261,7 +261,8 @@ function datalabelsBarraH(formatFn){
     formatter: formatFn || (v=>monedaCorta(v)) };
 }
 
-let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [], EMPRESAS_SIN_CRUZAR = [], EMBUDO = null, PEDIDOS_FRANCO_SIN_OPORTUNIDAD = [];
+let LINEAS = [], COMISION = [], GANADO = [], LINEAS_FILTRADAS = [], EMPRESAS_SIN_CRUZAR = [], EMBUDO = null,
+    PEDIDOS_FRANCO_SIN_OPORTUNIDAD = [], PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE = [];
 let chartClientes=null, chartModalidad=null, chartCategoria=null, chartTendencia=null,
     chartPrecio=null, chartDiaCliente=null, chartCatClienteMonto=null, chartCatClientePedidos=null,
     chartEvolucionCliente=null, chartGestionClientesFacturacion=null, chartGestionClientesM3=null;
@@ -748,7 +749,7 @@ function renderComision(){
       <div class="comision">
         <div class="comision__label">Comisión estimada — ${mesNombre} ${ultimo.anio}</div>
         <div class="comision__monto">${moneda(ultimo.totalACobrar)}</div>
-        <div class="comision__sub">Sobre facturación atribuida de ${moneda(ultimo.facturacion)} (clientes que Franco trajo — Ganado en el CRM —, facturen quien facturen), tramo ${ultimo.tramo} (${(ultimo.porcentaje*100).toFixed(1)}%)</div>
+        <div class="comision__sub">Sobre facturación atribuida de ${moneda(ultimo.facturacion)} (clientes con Oportunidad Ganado de Franco en el CRM, facturen quien facturen — o pedidos que Franco cargó él mismo, aunque el cliente no tenga Oportunidad todavía), tramo ${ultimo.tramo} (${(ultimo.porcentaje*100).toFixed(1)}%)</div>
         <div class="comision__grid">
           <div class="comision__item"><dt>Facturación del mes</dt><dd>${moneda(ultimo.facturacion)}</dd></div>
           <div class="comision__item"><dt>Comisión variable</dt><dd>${moneda(ultimo.comisionVariable)}</dd></div>
@@ -786,6 +787,26 @@ function renderComision(){
       <div class="alerta__cabecera"><span class="alerta__numero">${Object.keys(porCliente).length}</span>
       <span class="alerta__titulo">clientes que Franco facturó y ya suman a su comisión, pero no tienen su registro en el CRM</span></div>
       <p class="alerta__texto">Estos pedidos cuentan igual para la comisión — Franco los cargó, así que se vendieron. Falta nada más cargar la Oportunidad correspondiente en el CRM para que quede prolijo, pero la plata ya está sumada.</p>
+      ${filas}
+    </div>`);
+  }
+
+  if(PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE.length){
+    const porCliente = {};
+    PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE.forEach(p=>{
+      if(!porCliente[p.cliente]) porCliente[p.cliente] = {total:0, referencias:new Set(), estado:p.estadoCRM || "Pendiente"};
+      porCliente[p.cliente].total += p.total;
+      porCliente[p.cliente].referencias.add(p.sistema+"|"+p.referencia);
+    });
+    const filas = Object.entries(porCliente).sort((a,b)=>b[1].total-a[1].total)
+      .map(([cliente,d])=>`<div class="oportunidad" style="grid-template-columns:1fr auto;">
+        <div class="oportunidad__nombre">${cliente}</div>
+        <div style="text-align:right;"><strong>${moneda(d.total)}</strong><div class="oportunidad__fechas">${d.estado} · ${d.referencias.size} pedido(s)</div></div>
+      </div>`).join("");
+    bloques.push(`<div class="alerta" style="margin-bottom:16px;">
+      <div class="alerta__cabecera"><span class="alerta__numero">${Object.keys(porCliente).length}</span>
+      <span class="alerta__titulo">clientes con oportunidad en CRM, pero todavía no marcada como Ganado</span></div>
+      <p class="alerta__texto">El cliente ya está registrado en el CRM. Revisá su etapa antes de marcarla Ganado; estos pedidos no se presentan como clientes sin CRM.</p>
       ${filas}
     </div>`);
   }
@@ -839,7 +860,7 @@ function renderEmbudo(){
 // ================= ALERTAS =================
 function renderAlerta(){
   const cont = document.getElementById("alertaCont");
-  const totalAlertas = GANADO.length + PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length;
+  const totalAlertas = GANADO.length + PEDIDOS_FRANCO_SIN_OPORTUNIDAD.length + PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE.length;
 
   document.getElementById("contadorAlertas").style.display = totalAlertas ? "inline-block" : "none";
   document.getElementById("contadorAlertas").textContent = totalAlertas;
@@ -885,7 +906,24 @@ function renderAlerta(){
       ${items}</div>`;
   }
 
-  cont.innerHTML = bloque1 + bloque2;
+  let bloque3 = "";
+  if(PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE.length){
+    const porCliente = {};
+    PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE.forEach(p=>{
+      if(!porCliente[p.cliente]) porCliente[p.cliente] = {total:0, referencias:new Set(), estado:p.estadoCRM || "Pendiente"};
+      porCliente[p.cliente].total += p.total;
+      porCliente[p.cliente].referencias.add(p.sistema+"|"+p.referencia);
+    });
+    const filas = Object.entries(porCliente).sort((a,b)=>b[1].total-a[1].total).map(([cliente,d])=>`<div class="oportunidad">
+      <div><div class="oportunidad__nombre">${cliente}</div><div class="oportunidad__empresa">Oportunidad en CRM: ${d.estado}</div></div>
+      <div class="oportunidad__fechas">${d.referencias.size} pedido(s)<br>${moneda(d.total)}</div>
+    </div>`).join("");
+    bloque3 = `<div class="alerta" style="margin-top:20px;"><div class="alerta__cabecera"><span class="alerta__numero">${Object.keys(porCliente).length}</span>
+      <span class="alerta__titulo">clientes con oportunidad pendiente en el CRM</span></div>
+      <p class="alerta__texto">Ya tienen oportunidad registrada; no faltan en CRM. Revisá la etapa para decidir si corresponde pasarla a Ganado.</p>${filas}</div>`;
+  }
+
+  cont.innerHTML = bloque1 + bloque2 + bloque3;
 }
 
 // ================= BUSCADOR DE CLIENTE (autocompletar propio) =================
@@ -1036,7 +1074,7 @@ async function cargar(){
     EMPRESAS_SIN_CRUZAR = data.empresasFrancoSinCruzar || [];
     EMBUDO = data.embudoFranco || null;
     PEDIDOS_FRANCO_SIN_OPORTUNIDAD = data.pedidosFrancoSinOportunidad || [];
-    PEDIDOS_FRANCO_SIN_OPORTUNIDAD = data.pedidosFrancoSinOportunidad || [];
+    PEDIDOS_FRANCO_CON_OPORTUNIDAD_PENDIENTE = data.pedidosFrancoConOportunidadPendiente || [];
 
     document.getElementById("contenido").innerHTML = `
       <div class="pestana activa" id="pestana-resumen">
